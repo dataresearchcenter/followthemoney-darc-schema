@@ -1,0 +1,13 @@
+.vendor/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# the existing reference checkout — not part of this repo
+/followthemoney/
