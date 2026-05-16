@@ -33,7 +33,7 @@ Source:
       type: entity
       range: Event
       reverse:
-        name: sourcesReated
+        name: sourcesRelated
         label: "Related sources"
     maintainer:
       label: Maintainer
