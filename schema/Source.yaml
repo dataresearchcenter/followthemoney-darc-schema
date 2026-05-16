@@ -1,0 +1,45 @@
+Source:
+  label: "Source"
+  plural: "Sources"
+  description: >
+    Arbitrary source objects that publishes or maintains things.
+  extends:
+    - Interval
+    - Analyzable
+    - Thing
+  matchable: false
+  # generated: true
+  caption:
+    - name
+    - summary
+    - date
+  required:
+    - name
+  featured:
+    - name
+    - summary
+    - date
+    - location
+  properties:
+    location:
+      label: Location
+      type: address
+    type:
+      label: Type
+      description: "The type of source"
+    event:
+      label: Event
+      description: "Event this source is related to, e.g. a conference"
+      type: entity
+      range: Event
+      reverse:
+        name: sourcesReated
+        label: "Related sources"
+    maintainer:
+      label: Maintainer
+      description: "Society on whose behalf the source is published and maintained"
+      type: entity
+      range: LegalEntity
+      reverse:
+        name: sourcesMaintained
+        label: "Maintained sources"
