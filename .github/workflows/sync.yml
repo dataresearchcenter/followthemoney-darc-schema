@@ -14,72 +14,101 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: requirements.txt
+          fetch-depth: 0
 
-      - name: Install deps
-        run: pip install -r requirements.txt
-
-      - name: Record current upstream version
-        id: pre
-        run: echo "version=$(cat .upstream-version)" >> "$GITHUB_OUTPUT"
-
-      - name: Bump upstream if newer release exists
-        id: bump
+      - name: Configure git identity
         run: |
-          set -o pipefail
-          python scripts/sync.py --bump-latest 2>&1 | tee sync.log
-          echo "new_version=$(cat .upstream-version)" >> "$GITHUB_OUTPUT"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Detect changes
-        id: diff
+      - name: Import latest upstream on vendor branch
+        id: vendor
         run: |
-          if git diff --quiet; then
+          set -euo pipefail
+          git checkout vendor
+          before=$(git rev-parse HEAD)
+          ./scripts/import-upstream.sh
+          after=$(git rev-parse HEAD)
+          tag=$(cat .upstream-version)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ "$before" = "$after" ]; then
+            echo "vendor branch unchanged; nothing to do"
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Compose PR body
-        if: steps.diff.outputs.changed == 'true'
-        id: body
+      - name: Push vendor branch and tag
+        if: steps.vendor.outputs.changed == 'true'
+        run: |
+          git push origin vendor
+          git push origin "refs/tags/upstream/${{ steps.vendor.outputs.tag }}"
+
+      - name: Attempt merge into a new branch off main
+        if: steps.vendor.outputs.changed == 'true'
+        id: merge
+        run: |
+          set -uo pipefail
+          tag="${{ steps.vendor.outputs.tag }}"
+          branch="auto/upstream-$tag"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          git checkout -B "$branch" origin/main
+          if git merge --no-edit vendor; then
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+            git diff --name-only --diff-filter=U > /tmp/conflicts.txt
+            git add -A
+            git commit --no-verify -m "Merge upstream $tag (UNRESOLVED CONFLICTS)"
+          fi
+          git push -u origin "$branch"
+
+      - name: Open PR (clean merge)
+        if: steps.vendor.outputs.changed == 'true' && steps.merge.outputs.clean == 'true'
         env:
-          PREV: ${{ steps.pre.outputs.version }}
-          NEXT: ${{ steps.bump.outputs.new_version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create \
+            --base main \
+            --head "${{ steps.merge.outputs.branch }}" \
+            --title "Merge upstream ${{ steps.vendor.outputs.tag }}" \
+            --body "Auto-merge succeeded. Vendor branch advanced to \`${{ steps.vendor.outputs.tag }}\` and merged cleanly into main. Review the diff and merge." \
+            --label upstream-sync \
+            --label automated
+
+      - name: Open PR (conflicts — manual merge needed)
+        if: steps.vendor.outputs.changed == 'true' && steps.merge.outputs.clean == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           {
-            echo "body<<__EOF__"
-            echo "Bumps \`followthemoney\` from \`${PREV}\` to \`${NEXT}\`."
+            echo "Vendor branch advanced to \`${{ steps.vendor.outputs.tag }}\`, but merging into main produced conflicts."
             echo
-            echo "## \`sync.py\` output"
+            echo "The branch has been pushed **with conflict markers still in place** so you can resolve in-PR or locally."
+            echo
+            echo "## Conflicted files"
             echo
             echo '```'
-            cat sync.log
+            cat /tmp/conflicts.txt
             echo '```'
             echo
-            echo "If the output above includes a \`WARNING: N override(s) may be stale\`,"
-            echo "re-apply the upstream changes by hand to the corresponding files under"
-            echo "\`overrides/\`, then re-run \`make sync\` and push to this branch."
-            echo "__EOF__"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Open PR
-        if: steps.diff.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@v6
-        with:
-          branch: auto/upstream-${{ steps.bump.outputs.new_version }}
-          base: main
-          commit-message: "chore: bump followthemoney to ${{ steps.bump.outputs.new_version }}"
-          title: "chore: bump followthemoney to ${{ steps.bump.outputs.new_version }}"
-          body: ${{ steps.body.outputs.body }}
-          labels: |
-            upstream-sync
-            automated
-          add-paths: |
-            .upstream-version
-            .upstream-hashes.json
-            schema/
+            echo "## How to resolve locally"
+            echo
+            echo '```bash'
+            echo "git fetch origin ${{ steps.merge.outputs.branch }}"
+            echo "git checkout ${{ steps.merge.outputs.branch }}"
+            echo "# edit conflicted schema/*.yaml, remove <<<<<<< markers"
+            echo "git add schema/"
+            echo "git commit --amend --no-edit"
+            echo "git push -f origin ${{ steps.merge.outputs.branch }}"
+            echo '```'
+          } > /tmp/pr-body.md
+          gh pr create \
+            --draft \
+            --base main \
+            --head "${{ steps.merge.outputs.branch }}" \
+            --title "Merge upstream ${{ steps.vendor.outputs.tag }} — manual resolution needed" \
+            --body-file /tmp/pr-body.md \
+            --label upstream-sync \
+            --label needs-manual-merge

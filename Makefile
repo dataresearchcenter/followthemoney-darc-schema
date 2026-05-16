@@ -2,29 +2,28 @@ PY := .venv/bin/python
 PIP := .venv/bin/pip
 SCHEMA_DIR := $(PWD)/schema
 
-.PHONY: all install sync check test bump-upstream env clean
+.PHONY: all install test env bump-upstream
 
-all: install sync test
+all: install test
 
 install:
 	python3 -m venv .venv
 	$(PIP) install --upgrade pip
 	$(PIP) install -r requirements.txt
 
-sync:
-	$(PY) scripts/sync.py
-
-check:
-	$(PY) scripts/sync.py --check
-
-test: check
+test:
 	FTM_MODEL_PATH=$(SCHEMA_DIR) $(PY) -m pytest -q
-
-bump-upstream:
-	$(PY) scripts/sync.py --bump-latest
 
 env:
 	@echo "export FTM_MODEL_PATH=$(SCHEMA_DIR)"
 
-clean:
-	rm -rf .vendor
+# Convenience: switch to vendor, import the latest upstream release, switch back.
+# Leaves you on your starting branch with vendor advanced; merge it in with `git merge vendor`.
+bump-upstream:
+	@git diff-index --quiet HEAD -- || { echo "working tree dirty; commit or stash first" >&2; exit 1; }
+	@start=$$(git rev-parse --abbrev-ref HEAD); \
+	 git checkout vendor && \
+	 ./scripts/import-upstream.sh && \
+	 git checkout "$$start" && \
+	 echo "" && \
+	 echo "vendor updated. To bring upstream into this branch: git merge vendor"

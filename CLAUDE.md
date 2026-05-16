@@ -4,28 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is (and isn't)
 
-DARC's overlay of upstream [`followthemoney`](https://github.com/opensanctions/followthemoney) (FtM) schema YAMLs. **Not a Python package** — the deliverable is the `schema/` directory, which consumers point FtM at via the `FTM_MODEL_PATH` environment variable. Don't add `pyproject.toml` / `__init__.py` / a wheel build — that decision was deliberate (see plan in `/home/elliot/.claude/plans/this-project-should-be-twinkling-book.md` for the rationale).
+DARC's fork of upstream [`followthemoney`](https://github.com/opensanctions/followthemoney) (FtM) schema YAMLs. **Not a Python package** — the deliverable is the `schema/` directory, which consumers point FtM at via the `FTM_MODEL_PATH` environment variable. Don't add `pyproject.toml` / `__init__.py` / a wheel build — that decision was deliberate (see plan in `/home/elliot/.claude/plans/this-project-should-be-twinkling-book.md` for the rationale).
 
-`./followthemoney/` (if present at repo root) is a **reference checkout** of upstream FtM for browsing, not part of this repo — it's gitignored. The sync script downloads its own copy into `.vendor/`.
+`./followthemoney/` (if present at repo root) is a **reference checkout** of upstream FtM for browsing, not part of this repo — it's gitignored.
 
-## Architecture: vendor + overlay
+## Architecture: two git branches
+
+Two long-lived branches:
+
+- **`vendor`** — pristine upstream. Each commit corresponds to one upstream FtM release. The import script (`scripts/import-upstream.sh`) is the only thing that commits here, and it only modifies `schema/*.yaml` and `.upstream-version`.
+- **`main`** — branched from `vendor`'s first commit. Contains the same `schema/` plus DARC customizations on top, plus merge commits from `vendor` that bring in new upstream releases.
 
 ```
-overrides/*.yaml   ← SOURCE (committed) — full-file replacements or new schemas
-       +
-upstream@<.upstream-version>  ← fetched from GitHub on `make sync`
-       =
-schema/*.yaml      ← BUILD OUTPUT (committed) — what FTM_MODEL_PATH points at
+vendor:  V0 ───── V1 ───── V2          (upstream tarballs imported one by one)
+main:    V0 ─ A ─M1─ B ─C─M2 ─ D       (DARC edits + merges from vendor)
 ```
 
-Three load-bearing files:
-- `.upstream-version` — pins the upstream git tag (e.g. `v4.8.2`).
-- `.upstream-hashes.json` — sha256 of every upstream file at the pinned version. Used by `sync.py` to detect when upstream has changed a file we override (the "conflict report").
-- `schema/` — committed build artefact. Never hand-edit; `make check` catches drift.
+`git diff vendor main -- schema/` always shows "all DARC customizations".
 
-Override mechanism is **full-file replacement** — if upstream changes a file we override, the maintainer must re-apply by hand. The sync script surfaces this with a `WARNING: N override(s) may be stale` message and (when the previous vendor dir is still cached) a unified diff between the old and new upstream versions of the file.
+Property-level merge of upstream changes happens via git's standard 3-way merge — no custom merging code. When upstream and DARC edit different parts of the same file, git auto-merges. When they edit the same lines, the maintainer resolves the conflict in `schema/X.yaml` like any other merge conflict.
 
-Discovery that makes the whole approach work: `followthemoney/settings.py:16-17` reads `FTM_MODEL_PATH` from the environment and `model.py:45-48` walks that single directory — no library patching needed.
+Discovery that makes the whole approach work: `followthemoney/settings.py` reads `FTM_MODEL_PATH` from the environment and `model.py` walks that single directory — no library patching needed.
 
 ## FTM_MODEL_PATH gotcha
 
@@ -34,34 +33,34 @@ Discovery that makes the whole approach work: `followthemoney/settings.py:16-17`
 ## Commands
 
 ```bash
-make / make all           # install + sync + test (default target; cold-start or refresh)
+make / make all           # install + test (default target)
 make install              # create .venv, install requirements.txt
-make sync                 # rebuild schema/ from upstream@pin + overrides/
-make check                # CI: fail if schema/ differs from expected build
-make test                 # make check + pytest
-make bump-upstream        # update .upstream-version to latest GH release, then sync
+make test                 # pytest with FTM_MODEL_PATH=$(PWD)/schema
+make bump-upstream        # switch to vendor, run import script, switch back
 make env                  # print `export FTM_MODEL_PATH=…` for local use
-make clean                # remove .vendor/ download cache
+```
+
+Bump upstream by hand to a specific tag:
+```bash
+git checkout vendor
+./scripts/import-upstream.sh v4.10.0   # (omit arg for latest GitHub release)
+git checkout main
+git merge vendor                        # resolve conflicts in schema/*.yaml if any
 ```
 
 Run a single test:
 ```bash
-FTM_MODEL_PATH=$PWD/schema .venv/bin/pytest tests/test_model.py::test_overrides_are_applied -v
-```
-
-Run the sync script with non-default behaviour:
-```bash
-.venv/bin/python scripts/sync.py --check         # drift detection
-.venv/bin/python scripts/sync.py --bump-latest   # query GH API, bump if newer
+FTM_MODEL_PATH=$PWD/schema .venv/bin/pytest tests/test_model.py::test_model_uses_our_schema_dir -v
 ```
 
 ## Common changes
 
-- **Add or modify an override**: drop the file in `overrides/`, run `make sync`, then `make test`. Commit `overrides/X.yaml`, the regenerated `schema/X.yaml`, and `.upstream-hashes.json` if it changed.
-- **Bump upstream**: `make bump-upstream` (or edit `.upstream-version` by hand, then `make sync`). The weekly `.github/workflows/sync.yml` job does this automatically and opens a PR.
-- **Change sync behaviour** (e.g. add a new validation, change conflict-report format): edit `scripts/sync.py`. Keep the three commands (`sync`, `--check`, `--bump-latest`) backwards-compatible — CI depends on them.
+- **Modify a schema**: edit `schema/X.yaml` directly on `main`, `make test`, commit. No build step. This *is* the override mechanism.
+- **Add a brand-new (DARC-only) schema**: drop `schema/DarcCustomThing.yaml` on `main`. It lives only on main and is untouched by future `git merge vendor`.
+- **Bump upstream**: `make bump-upstream && git merge vendor`. Or use the weekly CI cron, which opens a PR automatically.
+- **Change the import script** (e.g. handle a new upstream layout): edit `scripts/import-upstream.sh`. Keep the "run only on vendor branch" guard and the no-op-when-unchanged exit behaviour — the CI sync workflow depends on them.
 
 ## CI
 
-- `.github/workflows/ci.yml`: runs `python scripts/sync.py --check` then pytest on every push/PR. The `--check` step is what catches manual edits to `schema/`.
-- `.github/workflows/sync.yml`: weekly Monday cron + manual dispatch. Calls `--bump-latest`, opens a PR via `peter-evans/create-pull-request@v6` with the sync log (including any stale-override warnings) in the body.
+- `.github/workflows/ci.yml`: runs pytest on every push/PR. No drift check — direct edits to `schema/` are the intended workflow now.
+- `.github/workflows/sync.yml`: weekly Monday cron + manual dispatch. Switches to `vendor`, runs `scripts/import-upstream.sh`, pushes the new vendor commit + `upstream/<tag>` tag, then creates `auto/upstream-<tag>` off `main`, attempts `git merge vendor`, pushes, and opens a PR via `gh pr create`. Clean merges → normal PR. Conflicting merges → **draft** PR labelled `needs-manual-merge` with conflict markers committed so the reviewer can resolve in-PR or locally.
