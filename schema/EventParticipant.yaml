@@ -1,0 +1,39 @@
+EventParticipant:
+  label: Event participant
+  plural: Event participants
+  extends:
+    - Interest
+  description: >
+    A participant in an `Event`.
+  matchable: false
+  required:
+    - event
+    - participant
+  featured:
+    - event
+    - participant
+    - role
+  caption:
+    - role
+  edge:
+    source: participant
+    label: "participates in"
+    target: event
+    directed: true
+    caption:
+      - role
+  properties:
+    event:
+      label: "Event"
+      type: entity
+      range: Event
+      reverse:
+        name: participants
+        label: "Participants"
+    participant:
+      label: "Participant"
+      type: entity
+      range: LegalEntity
+      reverse:
+        name: eventParticipation
+        label: "Events"
