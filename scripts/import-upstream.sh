@@ -52,10 +52,10 @@ curl -fsSL "$url" -o "$tmp/upstream.tar.gz"
 
 # Extract only followthemoney/schema/*.yaml, stripping the
 # `followthemoney-<ver>/followthemoney/schema/` prefix so we get a flat dir of yaml files.
-mkdir -p "$tmp/schema"
-tar -xzf "$tmp/upstream.tar.gz" -C "$tmp/schema" \
-    --strip-components=3 \
-    --wildcards '*/followthemoney/schema/*.yaml'
+# BSD tar (macOS) doesn't support --wildcards, so extract the full tree and pick out the YAMLs.
+mkdir -p "$tmp/extract" "$tmp/schema"
+tar -xzf "$tmp/upstream.tar.gz" -C "$tmp/extract"
+find "$tmp/extract" -path '*/followthemoney/schema/*.yaml' -exec cp {} "$tmp/schema/" \;
 
 count="$(find "$tmp/schema" -name '*.yaml' | wc -l | tr -d ' ')"
 if [ "$count" -eq 0 ]; then
