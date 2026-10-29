@@ -43,10 +43,14 @@ make env                  # print `export FTM_MODEL_PATH=…` for local use
 Bump upstream by hand to a specific tag:
 ```bash
 git checkout vendor
+git pull --ff-only origin vendor        # never import onto a stale vendor (see below)
 ./scripts/import-upstream.sh v4.10.0   # (omit arg for latest GitHub release)
+git push origin vendor upstream/v4.10.0 # vendor must reach origin before main merges it
 git checkout main
 git merge vendor                        # resolve conflicts in schema/*.yaml if any
 ```
+
+If `vendor` is behind `origin/vendor` when you import, you create a duplicate import commit that can't be pushed. Once main merges it, every later CI merge conflicts on `.upstream-version` (this happened for v4.10.0 and v4.11.0).
 
 Run a single test:
 ```bash
@@ -63,4 +67,4 @@ FTM_MODEL_PATH=$PWD/schema .venv/bin/pytest tests/test_model.py::test_model_uses
 ## CI
 
 - `.github/workflows/ci.yml`: runs pytest on every push/PR. No drift check — direct edits to `schema/` are the intended workflow now.
-- `.github/workflows/sync.yml`: weekly Monday cron + manual dispatch. Switches to `vendor`, runs `scripts/import-upstream.sh`, pushes the new vendor commit + `upstream/<tag>` tag, then creates `auto/upstream-<tag>` off `main`, attempts `git merge vendor`, pushes, and opens a PR via `gh pr create`. Clean merges → normal PR. Conflicting merges → **draft** PR labelled `needs-manual-merge` with conflict markers committed so the reviewer can resolve in-PR or locally.
+- `.github/workflows/sync.yml`: weekly Monday cron + manual dispatch. Switches to `vendor`, runs `scripts/import-upstream.sh`, pushes the new vendor commit + `upstream/<tag>` tag, then creates `auto/upstream-<tag>` off `main`, attempts `git merge vendor`, pushes, and opens a PR via `gh pr create`. Clean merges → normal PR. Conflicting merges → **draft** PR labelled `needs-manual-merge` with conflict markers committed so the reviewer can resolve in-PR or locally. A conflict in `.upstream-version` alone is auto-resolved to vendor's value. The workflow creates its PR labels itself (`gh pr create --label` fails if they're missing).

@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write   # creating repo labels goes through the issues API
 
 jobs:
   bump:
@@ -57,12 +58,34 @@ jobs:
           if git merge --no-edit vendor; then
             echo "clean=true" >> "$GITHUB_OUTPUT"
           else
-            echo "clean=false" >> "$GITHUB_OUTPUT"
+            # .upstream-version is vendor-owned. A conflict there only means main
+            # once merged a local vendor import that never reached origin/vendor,
+            # so vendor's value is always the right one.
+            if git diff --name-only --diff-filter=U | grep -qxF .upstream-version; then
+              git checkout --theirs -- .upstream-version
+              git add .upstream-version
+            fi
             git diff --name-only --diff-filter=U > /tmp/conflicts.txt
-            git add -A
-            git commit --no-verify -m "Merge upstream $tag (UNRESOLVED CONFLICTS)"
+            if [ -s /tmp/conflicts.txt ]; then
+              echo "clean=false" >> "$GITHUB_OUTPUT"
+              git add -A
+              git commit --no-verify -m "Merge upstream $tag (UNRESOLVED CONFLICTS)"
+            else
+              echo "clean=true" >> "$GITHUB_OUTPUT"
+              git commit --no-edit --no-verify
+            fi
           fi
           git push -u origin "$branch"
+
+      # gh pr create --label fails (before creating the PR) if a label is missing.
+      - name: Ensure PR labels exist
+        if: steps.vendor.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create upstream-sync      --force --color 1D76DB --description "Upstream followthemoney import"
+          gh label create automated          --force --color EDEDED --description "Opened by CI"
+          gh label create needs-manual-merge --force --color D93F0B --description "Upstream merge has conflicts to resolve"
 
       - name: Open PR (clean merge)
         if: steps.vendor.outputs.changed == 'true' && steps.merge.outputs.clean == 'true'
